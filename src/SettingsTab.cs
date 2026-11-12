@@ -31,6 +31,8 @@ namespace Msr
         private static SettingsMenu menu;
         private static GameObject page, vanillaScroll;
         private static Image tabImage;
+        private static RectTransform tabRect;
+        private static long layoutSignature;
         private static Sprite block, blockDark;
         private static TMP_FontAsset font;
         private static Material fontMat;
@@ -99,7 +101,10 @@ namespace Msr
             tabImage = go.GetComponent<Image>();
             if (tabImage != null) tabImage.sprite = block;
 
-            LayoutTabs(m, (RectTransform)go.transform);
+            tabRect = (RectTransform)go.transform;
+            LayoutTabs(m, tabRect);
+            KeepBackButtonLeftmost(parent);
+            go.AddComponent<TabKeeper>();
 
             if (!subscribed)
             {
@@ -136,9 +141,71 @@ namespace Msr
                 tabs[i].anchoredPosition = new Vector2(left + w * 0.5f + i * (w + gap), y);
                 // Vanilla labels are a fixed 160 wide; keep them inside narrower tabs.
                 var lbl = tabs[i].GetComponentInChildren<TextMeshProUGUI>(true);
+                if (lbl != null && !lbl.enableAutoSizing && lbl.preferredWidth > w - 6f)
+                {
+                    // e.g. "Multiplayer" once eight tabs share the strip
+                    lbl.fontSizeMax = lbl.fontSize; lbl.fontSizeMin = 9f; lbl.enableAutoSizing = true;
+                }
                 if (lbl != null && lbl.rectTransform.sizeDelta.x > w - 8f)
                     lbl.rectTransform.sizeDelta = new Vector2(w - 8f, lbl.rectTransform.sizeDelta.y);
             }
+            mine.SetAsLastSibling();
+            layoutSignature = Signature(m, mine);
+        }
+
+        /// <summary>
+        /// QoL Unknown finds the Back button as "the button with the smallest x in the window" and
+        /// hangs its preset buttons (1 2 3) off it. With seven or more tabs the first tab's centre
+        /// ends up left of the Back button's centre and the presets jump into the tab row. Measuring
+        /// the Back button from its left edge instead of its centre keeps it the leftmost, without
+        /// moving it on screen.
+        /// </summary>
+        private static void KeepBackButtonLeftmost(Transform panel)
+        {
+            RectTransform back = null;
+            foreach (Transform child in panel)
+            {
+                var btn = child.GetComponent<Button>();
+                var rt = child as RectTransform;
+                if (btn == null || rt == null || rt.anchoredPosition.y >= 0f) continue;   // bottom row only
+                bool closes = false;
+                for (int i = 0; i < btn.onClick.GetPersistentEventCount(); i++)
+                    if (btn.onClick.GetPersistentMethodName(i) == "Close") closes = true;
+                if (closes) { back = rt; break; }
+            }
+            if (back == null || back.pivot.x <= 0.001f) return;
+            float shift = back.sizeDelta.x * back.pivot.x;
+            back.pivot = new Vector2(0f, back.pivot.y);
+            back.anchoredPosition = new Vector2(back.anchoredPosition.x - shift, back.anchoredPosition.y);
+        }
+
+        /// <summary>Fingerprint of the tab strip as we left it: which tabs exist and where they sit.</summary>
+        private static long Signature(SettingsMenu m, RectTransform mine)
+        {
+            long h = 17;
+            foreach (var b in m.buttons)
+            {
+                if (b == null || !b.gameObject.activeSelf || b.transform.parent != mine.parent) continue;
+                var rt = (RectTransform)b.transform;
+                h = h * 31 + b.GetInstanceID();
+                h = h * 31 + Mathf.RoundToInt(rt.anchoredPosition.x * 10f);
+                h = h * 31 + Mathf.RoundToInt(rt.sizeDelta.x * 10f);
+            }
+            h = h * 31 + Mathf.RoundToInt(mine.anchoredPosition.x * 10f);
+            return h;
+        }
+
+        /// <summary>
+        /// Other mods rebuild the tab strip whenever a tab is selected (QoL Unknown destroys and
+        /// re-creates its "Mods" tab and spreads the tabs it knows about over the full width, which
+        /// buries ours). Whenever the strip no longer looks the way we laid it out, lay it out again.
+        /// </summary>
+        internal static void KeepLayout()
+        {
+            if (menu == null || tabRect == null || menu.buttons == null) return;
+            if (Signature(menu, tabRect) == layoutSignature) return;
+            try { LayoutTabs(menu, tabRect); }
+            catch (Exception e) { Plugin.Log.LogError(e); layoutSignature = Signature(menu, tabRect); }
         }
 
         // ------------------------------------------------------------------ page switching
@@ -679,6 +746,12 @@ namespace Msr
             go.SetActive(true);
             return input;
         }
+    }
+
+    /// <summary>Sits on the Skins tab button and keeps it in the tab strip.</summary>
+    internal sealed class TabKeeper : MonoBehaviour
+    {
+        private void LateUpdate() => SettingsTab.KeepLayout();
     }
 
     /// <summary>Waits for one key press while a keybind button or a hotkey badge is armed.</summary>
